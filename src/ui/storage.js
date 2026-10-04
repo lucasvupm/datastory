@@ -1,6 +1,32 @@
 // 儲存：在 claude.ai Artifact 裡用共用資料庫（兩個人看到同一份），
 // 其他地方（本機開啟、GitHub Pages）退回 localStorage，功能照樣完整。
 export const LOCAL_KEY = 'gongtong-banbiao-v1';
+// API key 另外存，而且永遠不會寫進 state —— state 會同步到共用資料庫。
+const API_KEY_STORAGE = 'gongtong-banbiao-apikey';
+
+export function getApiKey() {
+  try {
+    return localStorage.getItem(API_KEY_STORAGE) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function setApiKey(value) {
+  try {
+    const v = String(value || '').trim();
+    if (v) localStorage.setItem(API_KEY_STORAGE, v);
+    else localStorage.removeItem(API_KEY_STORAGE);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function maskApiKey(key) {
+  if (!key) return '';
+  return key.length <= 14 ? '••••' : `${key.slice(0, 11)}…${key.slice(-4)}`;
+}
 const DOC_PATH = 'shared/state';
 
 function readLocal() {

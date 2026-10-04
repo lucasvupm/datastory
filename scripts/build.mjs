@@ -13,6 +13,7 @@ const MODULES = [
   'src/core/clarify.js',
   'src/core/merge.js',
   'src/core/export.js',
+  'src/core/claude.js',
   'src/ui/storage.js',
   'src/ui/render.js',
   'src/ui/png.js',

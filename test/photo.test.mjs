@@ -82,3 +82,13 @@ test('檔案大小顯示', () => {
   assert.equal(formatBytes(2048), '2 KB');
   assert.equal(formatBytes(3 * 1024 * 1024), '3.0 MB');
 });
+
+test('照片的「哪一列是你」要排在所有問題最前面', () => {
+  const pending = { rows: [{ name: '甲', entries: [{ day: 1, code: '早' }] }, { name: '乙', entries: [{ day: 1, code: '休' }] }], shifts: [], year: 2026, month: 10 };
+  const qs = buildQuestions([
+    { id: 'a', name: '我', raw: '10/1 早\n10/2 ZZ', hints: {}, overrides: {} },
+    { id: 'b', name: '她', raw: '', hints: {}, overrides: {}, pending },
+  ], {}, PERIOD, new Date('2026-10-04'));
+  assert.equal(qs[0].type, 'photoRow', `排第一的是 ${qs[0].type}`);
+  assert.ok(qs.some((q) => q.type === 'shift'), '其他問題還是要在');
+});

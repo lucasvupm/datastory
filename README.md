@@ -32,7 +32,18 @@
 
 Claude 讀的時候哪裡模糊、哪裡被遮住，會寫在備註裡一起顯示出來，不會默默猜過去。
 
-圖片在送出前會先在你的裝置上縮到長邊 1600px 再上傳，4G 也不會等太久。這個功能需要 claude.ai 的 `sample` 能力，所以**只有發佈成 Artifact 的版本才有**；單檔版和 GitHub Pages 版會自動隱藏這個按鈕，提示你改用文字貼上。
+圖片在送出前會先在你的裝置上縮到長邊 1600px 再上傳，4G 也不會等太久。
+
+### 讀圖有兩條路
+
+1. **在 claude.ai 的 Artifact 裡** —— 用 `sample` 能力，不用 API key、不用付錢。但**不是每個檢視器都支援**：手機 Safari 的 artifact 檢視器會回 `images_unavailable`，這是平台限制，程式繞不過去。
+2. **任何瀏覽器、任何裝置** —— 在「設定」貼上自己的 Anthropic API key（`sk-ant-` 開頭，到 console.anthropic.com 開），App 就直接呼叫 Messages API 讀圖。
+
+App 會自動先試第 1 條，不行才走第 2 條。**只要設了 key，這就是一個完全獨立的 app**，跟 claude.ai 一點關係都沒有。
+
+API key 存在 `localStorage` 的獨立欄位，**不會寫進 `state`**，所以不會同步到共用資料庫、也不會跟對方共享。它只會送到 `api.anthropic.com`。
+
+直連用的是 `fetch`，不是官方 SDK —— 因為交付形式是「一個 HTML 檔、零相依、雙擊就能開」，不能有 build step 也不想綁 CDN。但 wire format 不是猜的：`anthropic-dangerous-direct-browser-access: true` 這個 header 和 base64 圖片區塊的形狀，都是從 `@anthropic-ai/sdk` 的原始碼和型別定義裡確認的。
 
 ## 看得懂的格式
 
@@ -68,12 +79,16 @@ Claude 讀的時候哪裡模糊、哪裡被遮住，會寫在備註裡一起顯�
 ## 怎麼跑
 
 ```bash
-npm test      # 45 個測試，涵蓋解析、詢問、合併、匯出、照片結果處理
+npm test      # 56 個測試，涵蓋解析、詢問、合併、匯出、照片、API 客戶端
 npm run build # 產生 dist/index.html（單檔）與 dist/artifact.html
 npm run serve # http://localhost:5173 開發用
 ```
 
-`dist/index.html` 是單一檔案，雙擊就能開，也可以丟上 GitHub Pages 或直接傳給別人。
+`dist/index.html` 是單一檔案，雙擊就能開，也可以直接傳給別人。
+
+### 做成自己的網址（獨立 app）
+
+repo 根目錄的 `index.html` 直接就是可用的網站。到 **Settings → Pages**，Source 選這個分支、資料夾選 `/ (root)`，幾分鐘後就有 `https://<你的帳號>.github.io/datastory/`。手機加到主畫面就跟 App 一樣。
 
 ## 資料存在哪
 
@@ -90,6 +105,7 @@ src/core/parse.js     五種版型的解析器，各自給信心分數，挑最�
 src/core/clarify.js   把「我不確定」變成問題卡；回答寫回字典
 src/core/merge.js     合併兩人班表、共同休假、共同空檔
 src/core/export.js    ICS / 純文字 / 備份
+src/core/claude.js    直連 Anthropic Messages API（可注入 fetch，所以測得到）
 src/ui/photo.js       照片縮圖、給 Claude 的提示、回傳結果的防呆
 src/ui/               狀態、畫面、PNG 繪製、儲存轉接層
 scripts/build.mjs     把模組串成單一 HTML

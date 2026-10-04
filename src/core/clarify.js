@@ -292,8 +292,10 @@ export function buildQuestions(people, learned = {}, period = null, today = new 
     });
   }
 
+  // 剛傳完照片就該先問「哪一列是你」—— 那是使用者這一秒的動作，排最前面
   const order = { blocking: 0, check: 1 };
-  questions.sort((a, b) => order[a.severity] - order[b.severity]);
+  const rank = (q) => (q.type === 'photoRow' ? -1 : 0);
+  questions.sort((a, b) => rank(a) - rank(b) || order[a.severity] - order[b.severity]);
   return dedupe(questions);
 }
 

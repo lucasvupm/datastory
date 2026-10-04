@@ -94,6 +94,20 @@ export async function prepareImages(files, limits) {
   return { images: accepted, errors };
 }
 
+/** 直連 API 要的是 base64（去掉 data: 前綴）。 */
+export function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const comma = result.indexOf(',');
+      resolve({ mediaType: blob.type || 'image/jpeg', base64: comma === -1 ? result : result.slice(comma + 1) });
+    };
+    reader.onerror = () => reject(new Error('讀不到這個檔案'));
+    reader.readAsDataURL(blob);
+  });
+}
+
 export function releaseImages(images) {
   for (const img of images || []) {
     try {

@@ -4,10 +4,11 @@ import { daysInMonth } from '../core/parse.js';
 import { buildPersonSchedule, buildQuestions, learnShift, forgetShift } from '../core/clarify.js';
 import { mergeSchedules, DEFAULT_SETTINGS } from '../core/merge.js';
 import { buildIcs, buildTextSummary, buildBackup, parseBackup } from '../core/export.js';
-import { createStore, saveFile, saveBlob, askClaude, hasClaudeHelp, claudeImageLimits, askClaudeWithImages, describeClaudeError, LOCAL_KEY } from './storage.js';
+import { createStore, saveFile, saveBlob, askClaude, hasClaudeHelp, claudeImageLimits, askClaudeWithImages, describeClaudeError, getApiKey, setApiKey, maskApiKey, LOCAL_KEY } from './storage.js';
+import { askClaudeDirect } from '../core/claude.js';
 import { esc, renderCalendar, renderStats, renderRuns, renderSlots, renderQuestions, renderDict, renderDayEditor } from './render.js';
 import { renderPng } from './png.js';
-import { prepareImages, releaseImages, buildPhotoPrompt, rowToText, normalizePhotoResult, formatBytes } from './photo.js';
+import { prepareImages, releaseImages, buildPhotoPrompt, rowToText, normalizePhotoResult, formatBytes, blobToBase64 } from './photo.js';
 
 
 const DEMO_A = `一 二 三 四 五 六 日
@@ -244,24 +245,20 @@ const FORMAT_SAMPLES = `10/1 早班          ← 一行一天
 
 function inputTab() {
   const demoNote = state.isDemo
-    ? `<div class="card" style="border-color:color-mix(in srgb, var(--gold) 45%, var(--rule))">
-        <header><h2>先看範例</h2><span class="spacer"></span><button class="btn" data-act="clear">清空，換我們的班表</button></header>
-        <p class="hint">下面兩份是示範用的班表，你可以直接按上面那顆按鈕清掉，或是把內容整個選取換成你們的。</p>
-      </div>`
+    ? `<div class="card"><div class="row"><span class="hint">下面是範例班表。</span><span class="spacer"></span><button class="btn tiny" data-act="clear">清空，換我們的</button></div></div>`
     : '';
   return `${demoNote}
-  <div class="card">
-    <header><h2>這個月</h2><span class="spacer"></span>${periodControl()}</header>
-    <p class="hint">兩個人的班表會排在同一個月上。班表裡如果寫了別的月份，我會問你要不要切過去。</p>
+  <div class="row" style="margin-bottom:14px">
+    ${periodControl()}
+    <span class="spacer"></span>
+    <span class="hint">兩個人排在同一個月</span>
   </div>
-  <div class="people">
-    ${state.people.map((p) => personCard(p)).join('')}
-  </div>
-  <div class="card">
-    <header><h2>看得懂哪些格式</h2></header>
-    <div class="scroll-x"><pre style="font-family:var(--mono);font-size:11.5px;line-height:1.8;margin:0;color:var(--ink-dim)">${esc(FORMAT_SAMPLES)}</pre></div>
-    <p class="hint" style="margin-top:10px">不確定格式對不對就先貼進去——讀不出來的地方我會在「確認」那一頁一個一個問你。全形、tab、Excel 直接複製都可以。</p>
-  </div>
+  <div class="people">${state.people.map((p) => personCard(p)).join('')}</div>
+  <details class="sample">
+    <summary>看得懂哪些格式</summary>
+    <pre>${esc(FORMAT_SAMPLES)}</pre>
+    <p class="hint" style="margin-top:8px">不確定就先貼進去，讀不出來的地方會在「確認」那頁問你。</p>
+  </details>
   <div class="row end" style="margin-top:14px">
     <button class="btn go" data-act="tab" data-tab="${questions.length > 0 ? 'ask' : 'result'}">
       ${questions.length > 0 ? `下一步：確認 ${questions.length} 件事` : '下一步：看共同班表'}
@@ -271,65 +268,46 @@ function inputTab() {
 
 function personCard(p) {
   const sched = buildPersonSchedule(p, state.learned, state.period, new Date());
-  const filled = sched.days.size;
-  const status = (p.raw || '').trim()
-    ? `讀到 ${filled} 天${sched.parsed.layoutName ? `・${esc(sched.parsed.layoutName)}` : ''}`
-    : '還沒有貼上';
+  const status = (p.raw || '').trim() ? `讀到 ${sched.days.size} 天` : '還沒有貼上';
   return `<div class="card person-card" data-who="${p.id}">
     <header>
       <input class="name-input" data-f="name" data-person="${p.id}" value="${esc(p.name)}" maxlength="10" aria-label="名字">
       <span class="spacer"></span>
       <span class="eyebrow">${status}</span>
     </header>
-    <textarea data-f="raw" data-person="${p.id}" placeholder="把班表貼進來，什麼格式都先試試看" spellcheck="false">${esc(p.raw)}</textarea>
-    <div class="row" style="margin-top:8px">
-      ${claudeHelp ? `<button class="btn tiny" data-act="askClaude" data-person="${p.id}" ${claudeBusy ? 'disabled' : ''}>${claudeBusy ? '讀取中…' : '讓 Claude 讀這段文字'}</button>` : ''}
-      <span class="spacer"></span>
-      <button class="btn-link" data-act="clearPerson" data-person="${p.id}">清空這份</button>
-    </div>
-    ${photoBlock(p)}
+    <textarea data-f="raw" data-person="${p.id}" placeholder="把班表貼進來" spellcheck="false">${esc(p.raw)}</textarea>
+    ${photoRow(p)}
   </div>`;
 }
 
-function photoBlock(p) {
-  if (claudeState === 'none') {
-    return `<div class="photo"><p class="hint">這個版本沒辦法讀照片（照片要交給 Claude 看）。請用文字貼上，或改開 claude.ai 上的版本。</p></div>`;
-  }
+/** 一行就好：能傳圖就一顆按鈕，不能傳就一句話。 */
+function photoRow(p) {
   const ps = photoFor(p.id);
-  if (imagesBlocked) {
-    return `<div class="photo">
-      <p class="hint">你現在用的這個瀏覽器／App 不支援把圖片傳給 Claude。可以改在電腦的瀏覽器開這個連結，或是把照片傳到 Claude 對話裡請它轉成文字，再貼到上面的框。</p>
-      ${ps.error ? `<p class="photo-status" data-kind="error">${esc(ps.error)}</p>` : ''}
-    </div>`;
-  }
-  const accept = imageLimits?.mediaTypes?.length ? imageLimits.mediaTypes.join(',') : 'image/*';
-  const maxCount = imageLimits?.maxCount ?? 4;
+  const canPhoto = (claudeState !== 'none' && !imagesBlocked) || Boolean(getApiKey());
   const inputId = `photo-input-${p.id}`;
+  const accept = imageLimits?.mediaTypes?.length ? imageLimits.mediaTypes.join(',') : 'image/*';
   const thumbs = ps.images.length
-    ? `<div class="thumbs">${ps.images.map((img) => `<div class="thumb"><img src="${img.url}" alt="${esc(img.name)}"><span class="size">${formatBytes(img.size)}</span></div>`).join('')}</div>`
+    ? `<div class="thumbs">${ps.images.map((img) => `<div class="thumb"><img src="${img.url}" alt=""><span class="size">${formatBytes(img.size)}</span></div>`).join('')}</div>`
     : '';
-  const status = ps.busy
-    ? `<p class="photo-status" data-kind="busy"><span class="dots">Claude 正在看這張班表</span>（通常 10–60 秒）</p>`
+  const note = ps.busy
+    ? '<p class="photo-status" data-kind="busy"><span class="dots">Claude 正在看</span></p>'
     : ps.error
       ? `<p class="photo-status" data-kind="error">${esc(ps.error)}</p>`
       : ps.info
         ? `<p class="photo-status">${esc(ps.info)}</p>`
-        : claudeState === 'checking'
-          ? '<p class="photo-status">正在確認這個環境能不能傳圖…</p>'
-          : '';
-  // 用 <label for> 而不是隱藏 input + .click()：iOS Safari 對 display:none 的
-  // 檔案輸入常常不開選擇器。
+        : '';
   return `<div class="photo">
-    <input type="file" id="${inputId}" class="visually-hidden" accept="${esc(accept)}" multiple data-photo-input="${p.id}">
     <div class="row">
-      <label class="btn tiny file-btn${ps.busy ? ' is-disabled' : ''}" for="${inputId}">傳班表照片</label>
-      ${ps.images.length && !ps.busy ? `<button class="btn tiny primary" data-act="readPhotos" data-person="${p.id}">讀這 ${ps.images.length} 張</button>` : ''}
+      ${canPhoto ? `<input type="file" id="${inputId}" class="visually-hidden" accept="${esc(accept)}" multiple data-photo-input="${p.id}">
+        <label class="btn tiny file-btn${ps.busy ? ' is-disabled' : ''}" for="${inputId}">照片</label>` : ''}
+      ${ps.images.length && !ps.busy ? `<button class="btn tiny primary" data-act="readPhotos" data-person="${p.id}">讀 ${ps.images.length} 張</button>` : ''}
       ${ps.busy ? `<button class="btn tiny" data-act="stopPhotos" data-person="${p.id}">停止</button>` : ''}
       ${ps.images.length && !ps.busy ? `<button class="btn-link" data-act="clearPhotos" data-person="${p.id}">移除</button>` : ''}
+      <span class="spacer"></span>
+      <button class="btn-link" data-act="clearPerson" data-person="${p.id}">清空</button>
     </div>
-    ${thumbs}
-    ${status}
-    ${ps.images.length || ps.busy ? '' : `<p class="hint" style="margin-top:6px">拍班表、截圖、或把圖片拖進這張卡片都可以，一次最多 ${maxCount} 張。整組人的班表也行，讀完我會問你哪一個是你。</p>`}
+    ${thumbs}${note}
+    ${canPhoto ? '' : '<p class="hint" style="margin-top:6px">這個瀏覽器不能傳圖。到「設定」貼上 API key 就能讀照片，任何裝置都行。</p>'}
   </div>`;
 }
 
@@ -402,10 +380,21 @@ function settingsTab() {
     </div>
   </div>
   <div class="card">
+    <header><h2>讀照片</h2></header>
+    <p class="hint">貼上你自己的 Anthropic API key，任何瀏覽器、任何裝置都能直接讀班表照片。到 <code>console.anthropic.com</code> 開一把，<code>sk-ant-</code> 開頭。</p>
+    <div class="fields" style="margin-top:12px">
+      <label class="field" style="flex:1 1 240px"><span>API KEY</span><input type="password" id="api-key" value="${esc(getApiKey())}" placeholder="sk-ant-..." autocomplete="off" spellcheck="false"></label>
+      <button class="btn" data-act="saveKey">存起來</button>
+      ${getApiKey() ? '<button class="btn ghost" data-act="clearKey">清掉</button>' : ''}
+    </div>
+    ${getApiKey() ? `<p class="hint" style="margin-top:8px">目前：<code>${esc(maskApiKey(getApiKey()))}</code>　這把 key 只存在這台裝置，只會送到 api.anthropic.com，不會進共用資料庫、也不會跟對方同步。</p>` : ''}
+  </div>
+  <div class="card">
     <header><h2>這個環境支援什麼</h2></header>
     <p class="hint">如果照片功能怪怪的，先看這裡。</p>
     <div class="dict" style="margin-top:10px">
       <div class="dict-row"><span class="key">Claude</span><span class="chip" data-kind="${claudeState === 'ready' ? 'off' : 'work'}">${claudeState === 'ready' ? '可用' : claudeState === 'checking' ? '確認中' : '不可用'}</span><span class="meta">讀文字 / 讀照片都靠它</span></div>
+      <div class="dict-row"><span class="key">API key</span><span class="chip" data-kind="${getApiKey() ? 'off' : 'work'}">${getApiKey() ? '已設定' : '未設定'}</span><span class="meta">沒有 artifact 傳圖能力時的備援</span></div>
       <div class="dict-row"><span class="key">傳圖片</span><span class="chip" data-kind="${imageLimits && !imagesBlocked ? 'off' : 'work'}">${imagesBlocked ? '這個瀏覽器不支援' : imageLimits ? `可用（最多 ${imageLimits.maxCount} 張）` : claudeState === 'checking' ? '確認中' : '沒回報支援'}</span><span class="meta">${esc((imageLimits?.mediaTypes || []).join(' ') || '—')}</span></div>
       <div class="dict-row"><span class="key">同步</span><span class="chip" data-kind="${store?.mode === 'shared' && store.canWrite ? 'off' : 'work'}">${store ? (store.mode === 'shared' && store.canWrite ? '兩人共用' : '只存這台裝置') : '載入中'}</span></div>
     </div>
@@ -677,6 +666,22 @@ const ACTIONS = {
     $('#sheet-host').innerHTML = '';
     toast(`新增了「${f.key.trim()}」`);
   },
+  saveKey() {
+    const value = document.querySelector('#api-key')?.value ?? '';
+    if (value && !/^sk-ant-/.test(value.trim())) {
+      toast('key 要以 sk-ant- 開頭');
+      return;
+    }
+    setApiKey(value);
+    imagesBlocked = false; // 有 key 了，重新給照片一次機會
+    render();
+    toast(value.trim() ? '存好了，現在可以讀照片了' : '清掉了');
+  },
+  clearKey() {
+    setApiKey('');
+    render();
+    toast('清掉了');
+  },
   forget(el) {
     mutate((s) => { s.learned = forgetShift(s.learned, el.dataset.key); });
     toast('忘掉了');
@@ -772,11 +777,30 @@ const ACTIONS = {
     ps.info = '';
     render();
     try {
-      const data = await askClaudeWithImages(
-        buildPhotoPrompt(state.period),
-        ps.images.map((img) => img.blob),
-        { signal: controller.signal },
-      );
+      const prompt = buildPhotoPrompt(state.period);
+      let data = null;
+
+      // 路線 1：在 claude.ai 的 artifact 裡，而且這個檢視器支援傳圖（免費、不用 key）
+      if (imageLimits && !imagesBlocked) {
+        try {
+          data = await askClaudeWithImages(prompt, ps.images.map((img) => img.blob), { signal: controller.signal });
+        } catch (err) {
+          if (err?.code === 'images_unavailable') imagesBlocked = true;
+          else throw err;
+        }
+      }
+
+      // 路線 2：用使用者自己的 API key 直連 —— 任何瀏覽器、任何裝置都能跑
+      if (!data) {
+        const key = getApiKey();
+        if (!key) {
+          ps.error = '這個瀏覽器不能把圖片交給 Claude。到「設定」貼上你自己的 API key，就能直接讀照片了。';
+          return;
+        }
+        const encoded = await Promise.all(ps.images.map((img) => blobToBase64(img.blob)));
+        data = await askClaudeDirect({ apiKey: key, images: encoded, prompt, signal: controller.signal });
+      }
+
       const result = normalizePhotoResult(data, state.period);
       if (!result) {
         ps.error = '這張照片我讀不出班表。可以拍清楚一點，或改用文字貼上。';
@@ -785,12 +809,9 @@ const ACTIONS = {
       ps.info = result.note ? `Claude 的備註：${result.note}` : '';
       applyPhotoResult(id, result);
     } catch (err) {
-      if (err?.code === 'images_unavailable') {
-        imagesBlocked = true;
-        ps.error = '這個瀏覽器不能把圖片傳給 Claude。';
-      } else if (err?.code !== 'cancelled') {
-        ps.error = describeClaudeError(err?.code);
-      }
+      if (err?.code === 'cancelled') { /* 使用者按了停止 */ }
+      else if (err?.message && err?.code) ps.error = err.message;
+      else ps.error = describeClaudeError(err?.code);
     } finally {
       ps.busy = false;
       ps.controller = null;
@@ -1020,7 +1041,7 @@ function bind() {
   for (const type of ['dragenter', 'dragover']) {
     document.addEventListener(type, (event) => {
       const card = event.target.closest?.('.person-card');
-      if (!card || claudeState === 'none' || imagesBlocked || !hasImageFiles(event.dataTransfer)) return;
+      if (!card || !canUsePhotos() || !hasImageFiles(event.dataTransfer)) return;
       event.preventDefault();
       card.classList.add('dropping');
     });
@@ -1032,7 +1053,7 @@ function bind() {
   });
   document.addEventListener('drop', async (event) => {
     const card = event.target.closest?.('.person-card');
-    if (!card || claudeState === 'none' || imagesBlocked) return;
+    if (!card || !canUsePhotos()) return;
     const files = [...(event.dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
     if (files.length === 0) return;
     event.preventDefault();
@@ -1041,7 +1062,7 @@ function bind() {
   });
 
   document.addEventListener('paste', async (event) => {
-    if (claudeState === 'none' || imagesBlocked) return;
+    if (!canUsePhotos()) return;
     const card = event.target.closest?.('.person-card');
     if (!card) return;
     const files = [...(event.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
@@ -1056,6 +1077,10 @@ function bind() {
       sheetDay = null;
     }
   });
+}
+
+function canUsePhotos() {
+  return (claudeState !== 'none' && !imagesBlocked) || Boolean(getApiKey());
 }
 
 function hasImageFiles(dataTransfer) {
