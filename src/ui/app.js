@@ -281,9 +281,35 @@ function personCard(p) {
 }
 
 /** 一行就好：能傳圖就一顆按鈕，不能傳就一句話。 */
+/** 這次讀照片會走哪一條路、要不要錢。按下去之前就該知道。 */
+function photoRoute() {
+  // 「免費」只有在平台真的回報支援傳圖時才算數。只看 sample 在不在會害
+  // 使用者以為不用錢，結果失敗後默默改走 API key 扣款。
+  if (imageLimits && !imagesBlocked) {
+    return { kind: 'free', label: '免費', note: '用你 claude.ai 的額度，不另外收費' };
+  }
+  if (getApiKey()) {
+    const m = MODELS[modelOf(getModel() || MODEL)];
+    const willTryFree = claudeState === 'ready' && !imagesBlocked;
+    return {
+      kind: 'paid',
+      label: `約 ${formatCost((3000 * m.input + 5000 * m.output) / 1e6)}`,
+      note: willTryFree ? `先免費試一次，不行才用你的 API key・${m.label}` : `用你的 API key・${m.label}`,
+    };
+  }
+  if (claudeState === 'checking') {
+    return { kind: 'checking', label: '確認中', note: '正在確認這個環境能不能傳圖' };
+  }
+  if (claudeState === 'ready' && !imagesBlocked) {
+    return { kind: 'try', label: '試試看', note: '這個瀏覽器沒回報傳圖能力，按下去才知道行不行' };
+  }
+  return { kind: 'none' };
+}
+
 function photoRow(p) {
   const ps = photoFor(p.id);
-  const canPhoto = (claudeState !== 'none' && !imagesBlocked) || Boolean(getApiKey());
+  const route = photoRoute();
+  const canPhoto = route.kind !== 'none';
   const inputId = `photo-input-${p.id}`;
   const accept = imageLimits?.mediaTypes?.length ? imageLimits.mediaTypes.join(',') : 'image/*';
   const thumbs = ps.images.length
@@ -299,7 +325,8 @@ function photoRow(p) {
   return `<div class="photo">
     <div class="row">
       ${canPhoto ? `<input type="file" id="${inputId}" class="visually-hidden" accept="${esc(accept)}" multiple data-photo-input="${p.id}">
-        <label class="btn tiny file-btn${ps.busy ? ' is-disabled' : ''}" for="${inputId}">照片</label>` : ''}
+        <label class="btn tiny file-btn${ps.busy ? ' is-disabled' : ''}" for="${inputId}">照片</label>
+        <span class="route" data-kind="${route.kind}" title="${esc(route.note)}">${esc(route.label)}</span>` : ''}
       ${ps.images.length && !ps.busy ? `<button class="btn tiny primary" data-act="readPhotos" data-person="${p.id}">讀 ${ps.images.length} 張</button>` : ''}
       ${ps.busy ? `<button class="btn tiny" data-act="stopPhotos" data-person="${p.id}">停止</button>` : ''}
       ${ps.images.length && !ps.busy ? `<button class="btn-link" data-act="clearPhotos" data-person="${p.id}">移除</button>` : ''}
@@ -808,8 +835,9 @@ const ACTIONS = {
       let data = null;
       let spent = 0;
 
-      // 路線 1：在 claude.ai 的 artifact 裡，而且這個檢視器支援傳圖（免費、不用 key）
-      if (imageLimits && !imagesBlocked) {
+      // 路線 1：claude.ai 的 sample（免費、不用 key）。即使 limits() 沒回報
+      // 支援傳圖也先試一次 —— 失敗是 images_unavailable，不花錢。
+      if (claudeState === 'ready' && !imagesBlocked) {
         try {
           data = await askClaudeWithImages(prompt, ps.images.map((img) => img.blob), { signal: controller.signal });
         } catch (err) {
