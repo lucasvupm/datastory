@@ -122,6 +122,10 @@ let sheetDay = null;
 let saveTimer = null;
 let claudeBusy = false;
 let imageLimits = null;
+// 'checking' = 還在問能力，'none' = 這裡根本沒有 Claude，'ready' = 問完了
+// 一開始就當成 null 會讓人在 claude.ai 上看到「只有 claude.ai 版本才有」
+let claudeState = (globalThis.claude && typeof globalThis.claude.use === 'function') ? 'checking' : 'none';
+let imagesBlocked = false; // 送出後才知道這個瀏覽器不支援傳圖
 const photoState = new Map(); // personId -> { images, busy, controller, error, info }
 
 function photoFor(id) {
@@ -288,11 +292,19 @@ function personCard(p) {
 }
 
 function photoBlock(p) {
-  if (!imageLimits) {
-    return `<div class="photo"><p class="hint">照片辨識只有在 claude.ai 上的版本才有。在這裡請用文字貼上。</p></div>`;
+  if (claudeState === 'none') {
+    return `<div class="photo"><p class="hint">這個版本沒辦法讀照片（照片要交給 Claude 看）。請用文字貼上，或改開 claude.ai 上的版本。</p></div>`;
   }
   const ps = photoFor(p.id);
-  const accept = (imageLimits.mediaTypes || ['image/*']).join(',');
+  if (imagesBlocked) {
+    return `<div class="photo">
+      <p class="hint">你現在用的這個瀏覽器／App 不支援把圖片傳給 Claude。可以改在電腦的瀏覽器開這個連結，或是把照片傳到 Claude 對話裡請它轉成文字，再貼到上面的框。</p>
+      ${ps.error ? `<p class="photo-status" data-kind="error">${esc(ps.error)}</p>` : ''}
+    </div>`;
+  }
+  const accept = imageLimits?.mediaTypes?.length ? imageLimits.mediaTypes.join(',') : 'image/*';
+  const maxCount = imageLimits?.maxCount ?? 4;
+  const inputId = `photo-input-${p.id}`;
   const thumbs = ps.images.length
     ? `<div class="thumbs">${ps.images.map((img) => `<div class="thumb"><img src="${img.url}" alt="${esc(img.name)}"><span class="size">${formatBytes(img.size)}</span></div>`).join('')}</div>`
     : '';
@@ -302,18 +314,22 @@ function photoBlock(p) {
       ? `<p class="photo-status" data-kind="error">${esc(ps.error)}</p>`
       : ps.info
         ? `<p class="photo-status">${esc(ps.info)}</p>`
-        : '';
+        : claudeState === 'checking'
+          ? '<p class="photo-status">正在確認這個環境能不能傳圖…</p>'
+          : '';
+  // 用 <label for> 而不是隱藏 input + .click()：iOS Safari 對 display:none 的
+  // 檔案輸入常常不開選擇器。
   return `<div class="photo">
-    <input type="file" accept="${esc(accept)}" multiple hidden data-photo-input="${p.id}">
+    <input type="file" id="${inputId}" class="visually-hidden" accept="${esc(accept)}" multiple data-photo-input="${p.id}">
     <div class="row">
-      <button class="btn tiny" data-act="pickPhoto" data-person="${p.id}" ${ps.busy ? 'disabled' : ''}>傳班表照片</button>
+      <label class="btn tiny file-btn${ps.busy ? ' is-disabled' : ''}" for="${inputId}">傳班表照片</label>
       ${ps.images.length && !ps.busy ? `<button class="btn tiny primary" data-act="readPhotos" data-person="${p.id}">讀這 ${ps.images.length} 張</button>` : ''}
       ${ps.busy ? `<button class="btn tiny" data-act="stopPhotos" data-person="${p.id}">停止</button>` : ''}
       ${ps.images.length && !ps.busy ? `<button class="btn-link" data-act="clearPhotos" data-person="${p.id}">移除</button>` : ''}
     </div>
     ${thumbs}
     ${status}
-    ${ps.images.length || ps.busy ? '' : `<p class="hint" style="margin-top:6px">拍班表、截圖、或直接把圖片拖進這張卡片都可以。整組人的班表也行，讀完我會問你哪一個是你。</p>`}
+    ${ps.images.length || ps.busy ? '' : `<p class="hint" style="margin-top:6px">拍班表、截圖、或把圖片拖進這張卡片都可以，一次最多 ${maxCount} 張。整組人的班表也行，讀完我會問你哪一個是你。</p>`}
   </div>`;
 }
 
@@ -383,6 +399,15 @@ function settingsTab() {
     ${renderDict(state.learned)}
     <div class="row" style="margin-top:12px">
       <button class="btn tiny" data-act="addDict">手動新增一個班別</button>
+    </div>
+  </div>
+  <div class="card">
+    <header><h2>這個環境支援什麼</h2></header>
+    <p class="hint">如果照片功能怪怪的，先看這裡。</p>
+    <div class="dict" style="margin-top:10px">
+      <div class="dict-row"><span class="key">Claude</span><span class="chip" data-kind="${claudeState === 'ready' ? 'off' : 'work'}">${claudeState === 'ready' ? '可用' : claudeState === 'checking' ? '確認中' : '不可用'}</span><span class="meta">讀文字 / 讀照片都靠它</span></div>
+      <div class="dict-row"><span class="key">傳圖片</span><span class="chip" data-kind="${imageLimits && !imagesBlocked ? 'off' : 'work'}">${imagesBlocked ? '這個瀏覽器不支援' : imageLimits ? `可用（最多 ${imageLimits.maxCount} 張）` : claudeState === 'checking' ? '確認中' : '沒回報支援'}</span><span class="meta">${esc((imageLimits?.mediaTypes || []).join(' ') || '—')}</span></div>
+      <div class="dict-row"><span class="key">同步</span><span class="chip" data-kind="${store?.mode === 'shared' && store.canWrite ? 'off' : 'work'}">${store ? (store.mode === 'shared' && store.canWrite ? '兩人共用' : '只存這台裝置') : '載入中'}</span></div>
     </div>
   </div>
   <div class="card">
@@ -725,9 +750,6 @@ const ACTIONS = {
   restore() {
     $('#restore-file').click();
   },
-  pickPhoto(el) {
-    document.querySelector(`[data-photo-input="${el.dataset.person}"]`)?.click();
-  },
   clearPhotos(el) {
     const ps = photoFor(el.dataset.person);
     releaseImages(ps.images);
@@ -763,7 +785,12 @@ const ACTIONS = {
       ps.info = result.note ? `Claude 的備註：${result.note}` : '';
       applyPhotoResult(id, result);
     } catch (err) {
-      if (err?.code !== 'cancelled') ps.error = describeClaudeError(err?.code);
+      if (err?.code === 'images_unavailable') {
+        imagesBlocked = true;
+        ps.error = '這個瀏覽器不能把圖片傳給 Claude。';
+      } else if (err?.code !== 'cancelled') {
+        ps.error = describeClaudeError(err?.code);
+      }
     } finally {
       ps.busy = false;
       ps.controller = null;
@@ -993,7 +1020,7 @@ function bind() {
   for (const type of ['dragenter', 'dragover']) {
     document.addEventListener(type, (event) => {
       const card = event.target.closest?.('.person-card');
-      if (!card || !imageLimits || !hasImageFiles(event.dataTransfer)) return;
+      if (!card || claudeState === 'none' || imagesBlocked || !hasImageFiles(event.dataTransfer)) return;
       event.preventDefault();
       card.classList.add('dropping');
     });
@@ -1005,7 +1032,7 @@ function bind() {
   });
   document.addEventListener('drop', async (event) => {
     const card = event.target.closest?.('.person-card');
-    if (!card || !imageLimits) return;
+    if (!card || claudeState === 'none' || imagesBlocked) return;
     const files = [...(event.dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
     if (files.length === 0) return;
     event.preventDefault();
@@ -1014,7 +1041,7 @@ function bind() {
   });
 
   document.addEventListener('paste', async (event) => {
-    if (!imageLimits) return;
+    if (claudeState === 'none' || imagesBlocked) return;
     const card = event.target.closest?.('.person-card');
     if (!card) return;
     const files = [...(event.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
@@ -1076,6 +1103,7 @@ export function start() {
     const [help, limits, created] = await Promise.all([hasClaudeHelp(), claudeImageLimits(), createStore()]);
     claudeHelp = help;
     imageLimits = limits;
+    claudeState = help ? 'ready' : 'none';
     store = created;
     const remote = await store.read();
     if (remote && JSON.stringify(remote) !== JSON.stringify(state)) {

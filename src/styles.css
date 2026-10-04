@@ -261,6 +261,10 @@ table.wide { width: 100%; border-collapse: collapse; font-size: 13px; }
 @media (max-width: 759px) { textarea { min-height: 110px; } }
 
 /* ---------------------------------------------------------------- 照片班表 */
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.file-btn { display: inline-block; cursor: pointer; }
+.file-btn.is-disabled { opacity: .45; pointer-events: none; }
+.photo:focus-within .file-btn { outline: 2px solid var(--a); outline-offset: 2px; }
 .photo { margin-top: 10px; border-top: 1px dashed var(--rule); padding-top: 10px; }
 .person-card.dropping { border-color: var(--who); background: color-mix(in srgb, var(--who) 6%, var(--surface)); }
 .thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
