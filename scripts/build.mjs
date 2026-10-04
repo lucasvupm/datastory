@@ -16,6 +16,7 @@ const MODULES = [
   'src/ui/storage.js',
   'src/ui/render.js',
   'src/ui/png.js',
+  'src/ui/photo.js',
   'src/ui/app.js',
 ];
 

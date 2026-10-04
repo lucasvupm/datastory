@@ -79,11 +79,27 @@ export function buildQuestions(people, learned = {}, period = null, today = new 
   let anyMonthInText = false;
 
   for (const person of people) {
+    const who = person.name || (person.id === 'a' ? '你' : '對方');
+
+    // 照片讀回來有好幾個人的班（醫院、賣場的班表通常是整組的），先問哪一個是他
+    const pending = person.pending;
+    if (pending && Array.isArray(pending.rows) && pending.rows.length > 1) {
+      questions.push({
+        id: `${person.id}:photoRow`,
+        personId: person.id,
+        type: 'photoRow',
+        severity: 'blocking',
+        title: `照片裡有 ${pending.rows.length} 個人的班，哪一個是${who}？`,
+        detail: pending.note ? `Claude 的備註：${pending.note}` : '選一個，那一列就會填進去，填完還可以自己改。',
+        options: pending.rows.map((row, index) => ({ index, name: row.name, count: row.entries.length })),
+      });
+      continue;
+    }
+
     if (!(person.raw || '').trim()) continue;
     const sched = buildPersonSchedule(person, learned, period, today);
     if (sched.parsed.detected) anyMonthInText = true;
     const p = sched.parsed;
-    const who = person.name || (person.id === 'a' ? '你' : '對方');
 
     const otherMonth = p.detected && p.detected.month !== p.month
       ? p.detected.month

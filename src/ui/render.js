@@ -187,6 +187,11 @@ function questionBody(q, ctx) {
         <button class="btn" data-act="goto" data-tab="input">回去改貼上的內容</button>
         ${ctx.claudeHelp ? `<button class="btn primary" data-act="askClaude" data-person="${esc(q.personId)}">讓 Claude 幫我讀這份班表</button>` : ''}
       </div>`;
+    case 'photoRow':
+      return `<div class="answers">
+        ${q.options.map((o) => `<button class="btn" data-act="pickRow" data-person="${esc(q.personId)}" data-index="${o.index}">${esc(o.name)}　<span class="muted">${o.count} 天</span></button>`).join('')}
+        <button class="btn ghost" data-act="dropPending" data-person="${esc(q.personId)}">都不是，重傳一張</button>
+      </div>`;
     case 'note':
       return `<div class="answers"><button class="btn" data-act="dismiss" data-qid="${esc(q.id)}">知道了</button></div>`;
     default:

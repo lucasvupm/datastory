@@ -4,9 +4,10 @@ import { daysInMonth } from '../core/parse.js';
 import { buildPersonSchedule, buildQuestions, learnShift, forgetShift } from '../core/clarify.js';
 import { mergeSchedules, DEFAULT_SETTINGS } from '../core/merge.js';
 import { buildIcs, buildTextSummary, buildBackup, parseBackup } from '../core/export.js';
-import { createStore, saveFile, saveBlob, askClaude, hasClaudeHelp, LOCAL_KEY } from './storage.js';
+import { createStore, saveFile, saveBlob, askClaude, hasClaudeHelp, claudeImageLimits, askClaudeWithImages, describeClaudeError, LOCAL_KEY } from './storage.js';
 import { esc, renderCalendar, renderStats, renderRuns, renderSlots, renderQuestions, renderDict, renderDayEditor } from './render.js';
 import { renderPng } from './png.js';
+import { prepareImages, releaseImages, buildPhotoPrompt, rowToText, normalizePhotoResult, formatBytes } from './photo.js';
 
 
 const DEMO_A = `一 二 三 四 五 六 日
@@ -102,6 +103,7 @@ function normalizeState(raw) {
         raw: typeof p.raw === 'string' ? p.raw : '',
         hints: p.hints && typeof p.hints === 'object' ? p.hints : {},
         overrides: p.overrides && typeof p.overrides === 'object' ? p.overrides : {},
+        pending: p.pending && Array.isArray(p.pending.rows) && p.pending.rows.length > 0 ? p.pending : null,
       };
     }),
     learned: raw.learned && typeof raw.learned === 'object' ? raw.learned : {},
@@ -119,6 +121,13 @@ let tab = 'input';
 let sheetDay = null;
 let saveTimer = null;
 let claudeBusy = false;
+let imageLimits = null;
+const photoState = new Map(); // personId -> { images, busy, controller, error, info }
+
+function photoFor(id) {
+  if (!photoState.has(id)) photoState.set(id, { images: [], busy: false, controller: null, error: '', info: '' });
+  return photoState.get(id);
+}
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -142,7 +151,8 @@ function pendingCount() {
 }
 
 function hasInput() {
-  return state.people.some((p) => (p.raw || '').trim().length > 0);
+  // 照片讀完但還沒選是哪一列時，raw 還是空的，但確實已經有東西要確認了
+  return state.people.some((p) => (p.raw || '').trim().length > 0 || p.pending);
 }
 
 // ---------------------------------------------------------------- 儲存
@@ -269,10 +279,41 @@ function personCard(p) {
     </header>
     <textarea data-f="raw" data-person="${p.id}" placeholder="把班表貼進來，什麼格式都先試試看" spellcheck="false">${esc(p.raw)}</textarea>
     <div class="row" style="margin-top:8px">
-      ${claudeHelp ? `<button class="btn tiny" data-act="askClaude" data-person="${p.id}" ${claudeBusy ? 'disabled' : ''}>${claudeBusy ? '讀取中…' : '讓 Claude 幫我讀'}</button>` : ''}
+      ${claudeHelp ? `<button class="btn tiny" data-act="askClaude" data-person="${p.id}" ${claudeBusy ? 'disabled' : ''}>${claudeBusy ? '讀取中…' : '讓 Claude 讀這段文字'}</button>` : ''}
       <span class="spacer"></span>
       <button class="btn-link" data-act="clearPerson" data-person="${p.id}">清空這份</button>
     </div>
+    ${photoBlock(p)}
+  </div>`;
+}
+
+function photoBlock(p) {
+  if (!imageLimits) {
+    return `<div class="photo"><p class="hint">照片辨識只有在 claude.ai 上的版本才有。在這裡請用文字貼上。</p></div>`;
+  }
+  const ps = photoFor(p.id);
+  const accept = (imageLimits.mediaTypes || ['image/*']).join(',');
+  const thumbs = ps.images.length
+    ? `<div class="thumbs">${ps.images.map((img) => `<div class="thumb"><img src="${img.url}" alt="${esc(img.name)}"><span class="size">${formatBytes(img.size)}</span></div>`).join('')}</div>`
+    : '';
+  const status = ps.busy
+    ? `<p class="photo-status" data-kind="busy"><span class="dots">Claude 正在看這張班表</span>（通常 10–60 秒）</p>`
+    : ps.error
+      ? `<p class="photo-status" data-kind="error">${esc(ps.error)}</p>`
+      : ps.info
+        ? `<p class="photo-status">${esc(ps.info)}</p>`
+        : '';
+  return `<div class="photo">
+    <input type="file" accept="${esc(accept)}" multiple hidden data-photo-input="${p.id}">
+    <div class="row">
+      <button class="btn tiny" data-act="pickPhoto" data-person="${p.id}" ${ps.busy ? 'disabled' : ''}>傳班表照片</button>
+      ${ps.images.length && !ps.busy ? `<button class="btn tiny primary" data-act="readPhotos" data-person="${p.id}">讀這 ${ps.images.length} 張</button>` : ''}
+      ${ps.busy ? `<button class="btn tiny" data-act="stopPhotos" data-person="${p.id}">停止</button>` : ''}
+      ${ps.images.length && !ps.busy ? `<button class="btn-link" data-act="clearPhotos" data-person="${p.id}">移除</button>` : ''}
+    </div>
+    ${thumbs}
+    ${status}
+    ${ps.images.length || ps.busy ? '' : `<p class="hint" style="margin-top:6px">拍班表、截圖、或直接把圖片拖進這張卡片都可以。整組人的班表也行，讀完我會問你哪一個是你。</p>`}
   </div>`;
 }
 
@@ -684,6 +725,66 @@ const ACTIONS = {
   restore() {
     $('#restore-file').click();
   },
+  pickPhoto(el) {
+    document.querySelector(`[data-photo-input="${el.dataset.person}"]`)?.click();
+  },
+  clearPhotos(el) {
+    const ps = photoFor(el.dataset.person);
+    releaseImages(ps.images);
+    ps.images = [];
+    ps.error = '';
+    ps.info = '';
+    render();
+  },
+  stopPhotos(el) {
+    photoFor(el.dataset.person).controller?.abort();
+  },
+  async readPhotos(el) {
+    const id = el.dataset.person;
+    const ps = photoFor(id);
+    if (ps.busy || ps.images.length === 0) return;
+    const controller = new AbortController();
+    ps.busy = true;
+    ps.controller = controller;
+    ps.error = '';
+    ps.info = '';
+    render();
+    try {
+      const data = await askClaudeWithImages(
+        buildPhotoPrompt(state.period),
+        ps.images.map((img) => img.blob),
+        { signal: controller.signal },
+      );
+      const result = normalizePhotoResult(data, state.period);
+      if (!result) {
+        ps.error = '這張照片我讀不出班表。可以拍清楚一點，或改用文字貼上。';
+        return;
+      }
+      ps.info = result.note ? `Claude 的備註：${result.note}` : '';
+      applyPhotoResult(id, result);
+    } catch (err) {
+      if (err?.code !== 'cancelled') ps.error = describeClaudeError(err?.code);
+    } finally {
+      ps.busy = false;
+      ps.controller = null;
+      render();
+    }
+  },
+  pickRow(el) {
+    const id = el.dataset.person;
+    const person = personById(id);
+    const pending = person?.pending;
+    if (!pending) return;
+    applyRow(id, pending, Number(el.dataset.index));
+  },
+  dropPending(el) {
+    mutate((s) => {
+      const p = s.people.find((x) => x.id === el.dataset.person);
+      if (p) p.pending = null;
+    });
+    tab = 'input';
+    render();
+  },
   async askClaude(el) {
     const person = personById(el.dataset.person);
     if (!person || !(person.raw || '').trim()) {
@@ -727,6 +828,49 @@ function claudePrompt(raw, period) {
 """
 ${raw.slice(0, 4000)}
 """`;
+}
+
+function applyPhotoResult(personId, result) {
+  if (result.rows.length === 1) {
+    applyRow(personId, result, 0);
+    return;
+  }
+  mutate((s) => {
+    const p = s.people.find((x) => x.id === personId);
+    if (p) p.pending = result;
+  });
+  tab = 'ask';
+  render();
+  toast(`照片裡有 ${result.rows.length} 個人，選一下哪個是你`);
+}
+
+/** 把讀到的那一列變成文字塞回輸入框 —— 之後就走跟手動貼上一樣的流程。 */
+function applyRow(personId, pending, index) {
+  const row = pending.rows[index];
+  if (!row) return;
+  mutate((s) => {
+    const p = s.people.find((x) => x.id === personId);
+    if (!p) return;
+    p.raw = rowToText(row, pending.month);
+    p.overrides = {};
+    p.hints = {};
+    p.pending = null;
+    for (const shift of pending.shifts) {
+      s.learned = learnShift(s.learned, shift.code, {
+        label: (shift.label || shift.code).slice(0, 10),
+        kind: shift.kind === 'off' ? OFF : WORK,
+        start: shift.start || '09:00',
+        end: shift.end || '18:00',
+      });
+    }
+    s.period = { year: pending.year, month: pending.month };
+  });
+  const ps = photoFor(personId);
+  releaseImages(ps.images);
+  ps.images = [];
+  tab = questions.length > 0 ? 'ask' : 'result';
+  render();
+  toast(`讀到 ${row.entries.length} 天`);
 }
 
 function applyClaudeResult(personId, data) {
@@ -823,6 +967,12 @@ function bind() {
   });
 
   document.addEventListener('change', async (event) => {
+    const photoInput = event.target.dataset?.photoInput;
+    if (photoInput) {
+      await addPhotoFiles(photoInput, [...(event.target.files || [])]);
+      event.target.value = '';
+      return;
+    }
     if (event.target.id !== 'restore-file') return;
     const file = event.target.files?.[0];
     if (!file) return;
@@ -840,12 +990,68 @@ function bind() {
     }
   });
 
+  for (const type of ['dragenter', 'dragover']) {
+    document.addEventListener(type, (event) => {
+      const card = event.target.closest?.('.person-card');
+      if (!card || !imageLimits || !hasImageFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      card.classList.add('dropping');
+    });
+  }
+  document.addEventListener('dragleave', (event) => {
+    if (event.target.closest?.('.person-card') && !event.relatedTarget?.closest?.('.person-card')) {
+      for (const c of document.querySelectorAll('.person-card.dropping')) c.classList.remove('dropping');
+    }
+  });
+  document.addEventListener('drop', async (event) => {
+    const card = event.target.closest?.('.person-card');
+    if (!card || !imageLimits) return;
+    const files = [...(event.dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
+    if (files.length === 0) return;
+    event.preventDefault();
+    card.classList.remove('dropping');
+    await addPhotoFiles(card.dataset.who, files);
+  });
+
+  document.addEventListener('paste', async (event) => {
+    if (!imageLimits) return;
+    const card = event.target.closest?.('.person-card');
+    if (!card) return;
+    const files = [...(event.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
+    if (files.length === 0) return;
+    event.preventDefault();
+    await addPhotoFiles(card.dataset.who, files);
+  });
+
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && $('#sheet-host').innerHTML) {
       $('#sheet-host').innerHTML = '';
       sheetDay = null;
     }
   });
+}
+
+function hasImageFiles(dataTransfer) {
+  return [...(dataTransfer?.items || [])].some((i) => i.kind === 'file');
+}
+
+async function addPhotoFiles(personId, files) {
+  if (!files || files.length === 0) return;
+  const ps = photoFor(personId);
+  const room = Math.max(0, (imageLimits?.maxCount ?? 4) - ps.images.length);
+  if (room === 0) {
+    ps.error = `一次最多 ${imageLimits?.maxCount ?? 4} 張，先按「移除」再加新的。`;
+    render();
+    return;
+  }
+  ps.error = '';
+  ps.info = '處理圖片中…';
+  render();
+  const { images, errors } = await prepareImages(files.slice(0, room), imageLimits);
+  ps.images = [...ps.images, ...images];
+  ps.error = errors.join('　');
+  ps.info = images.length ? `準備好 ${images.length} 張，按「讀這 ${ps.images.length} 張」。` : '';
+  render();
 }
 
 // ---------------------------------------------------------------- 啟動
@@ -867,8 +1073,9 @@ export function start() {
   render();
 
   (async () => {
-    const [help, created] = await Promise.all([hasClaudeHelp(), createStore()]);
+    const [help, limits, created] = await Promise.all([hasClaudeHelp(), claudeImageLimits(), createStore()]);
     claudeHelp = help;
+    imageLimits = limits;
     store = created;
     const remote = await store.read();
     if (remote && JSON.stringify(remote) !== JSON.stringify(state)) {
