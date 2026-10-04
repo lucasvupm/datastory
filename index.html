@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>共同班表</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@600;700&family=Noto+Sans+TC:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="src/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="masthead">
+    <div>
+      <h1>共同班表</h1>
+      <p class="sub">兩份班表　→　一份看得懂的</p>
+    </div>
+    <span class="mode-badge" id="mode">載入中…</span>
+  </header>
+
+  <nav class="steps" id="steps" role="tablist" aria-label="步驟"></nav>
+
+  <main>
+    <section id="tab-input" role="tabpanel" aria-label="貼班表"></section>
+    <section id="tab-ask" role="tabpanel" aria-label="確認" hidden></section>
+    <section id="tab-result" role="tabpanel" aria-label="共同班表" hidden></section>
+    <section id="tab-settings" role="tabpanel" aria-label="設定" hidden></section>
+  </main>
+</div>
+<div id="sheet-host"></div>
+<div id="toast-host" aria-live="polite"></div>
+<script type="module">
+  import { start } from './src/ui/app.js';
+  start();
+</script>
+</body>
+</html>
