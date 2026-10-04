@@ -12,6 +12,33 @@
 export const API_URL = 'https://api.anthropic.com/v1/messages';
 export const API_VERSION = '2023-06-01';
 export const MODEL = 'claude-opus-5-5';
+
+// 價格是 $ / 百萬 token，取自 platform.claude.com 的 pricing 頁。
+// effort: false 代表這個模型不吃 output_config.effort（送了會錯）。
+export const MODELS = {
+  'claude-opus-5-5': { label: 'Opus 5.5', input: 4, output: 20, effort: true, note: '最準，照片糊、手寫的也讀得出來' },
+  'claude-sonnet-5-5': { label: 'Sonnet 5.5', input: 2, output: 10, effort: true, note: '一半價錢，清楚的班表夠用' },
+  'claude-haiku-4-5': { label: 'Haiku 4.5', input: 1, output: 5, effort: false, note: '最便宜，只適合很清楚的印刷表格' },
+};
+
+export function modelOf(id) {
+  return MODELS[id] ? id : MODEL;
+}
+
+/** 回傳美金。usage 來自 API 回應，不是用猜的。 */
+export function costOf(usage, model) {
+  const price = MODELS[modelOf(model)];
+  const input = Number(usage?.input_tokens) || 0;
+  const output = Number(usage?.output_tokens) || 0;
+  const cached = Number(usage?.cache_read_input_tokens) || 0;
+  return ((input * price.input) + (cached * price.input * 0.1) + (output * price.output)) / 1e6;
+}
+
+export function formatCost(usd) {
+  if (!Number.isFinite(usd) || usd <= 0) return '$0';
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  return `$${usd.toFixed(2)}`;
+}
 export const MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
 export function apiHeaders(apiKey) {
@@ -27,19 +54,22 @@ export function apiHeaders(apiKey) {
  * @param {Array<{mediaType: string, base64: string}>} images
  * @param {string} prompt
  */
-export function buildRequest(images, prompt) {
+export function buildRequest(images, prompt, model = MODEL) {
+  const id = modelOf(model);
   const content = images.map((img) => ({
     type: 'image',
     source: { type: 'base64', media_type: img.mediaType, data: img.base64 },
   }));
   content.push({ type: 'text', text: prompt });
-  return {
-    model: MODEL,
+  const req = {
+    model: id,
     max_tokens: 16000,
-    // Opus 5.5 的 thinking 永遠開著，送 thinking 參數會 400，用 effort 控制深度。
-    output_config: { effort: 'high' },
     messages: [{ role: 'user', content }],
   };
+  // Opus 5.5 / Sonnet 5.5 的 thinking 永遠開著（送 thinking 參數會 400），
+  // 深度用 effort 控制。Haiku 4.5 不吃 effort，送了會錯。
+  if (MODELS[id].effort) req.output_config = { effort: 'high' };
+  return req;
 }
 
 /** 把回應裡的文字接起來。先擋 refusal，再擋空回應。 */
@@ -100,7 +130,7 @@ export function describeHttpError(status, body) {
  * 真正送出請求。fetchImpl 可注入，測試才跑得動。
  * @returns {Promise<object>} 解析過的 JSON
  */
-export async function askClaudeDirect({ apiKey, images, prompt, signal, fetchImpl = globalThis.fetch }) {
+export async function askClaudeDirect({ apiKey, images, prompt, model = MODEL, signal, fetchImpl = globalThis.fetch }) {
   if (!apiKey || !/^sk-ant-/.test(apiKey.trim())) {
     throw claudeError('no_key', '還沒設定 API key。到「設定」貼上一把 sk-ant- 開頭的 key。');
   }
@@ -109,7 +139,7 @@ export async function askClaudeDirect({ apiKey, images, prompt, signal, fetchImp
     res = await fetchImpl(API_URL, {
       method: 'POST',
       headers: apiHeaders(apiKey.trim()),
-      body: JSON.stringify(buildRequest(images, prompt)),
+      body: JSON.stringify(buildRequest(images, prompt, model)),
       signal,
     });
   } catch (err) {
@@ -121,5 +151,10 @@ export async function askClaudeDirect({ apiKey, images, prompt, signal, fetchImp
     body = await res.json();
   } catch { /* 可能回了非 JSON */ }
   if (!res.ok) throw describeHttpError(res.status, body);
-  return parseJsonLoosely(extractText(body));
+  return {
+    data: parseJsonLoosely(extractText(body)),
+    usage: body.usage || null,
+    cost: costOf(body.usage, model),
+    model: modelOf(model),
+  };
 }

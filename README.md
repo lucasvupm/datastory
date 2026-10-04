@@ -43,6 +43,22 @@ App 會自動先試第 1 條，不行才走第 2 條。**只要設了 key，這�
 
 API key 存在 `localStorage` 的獨立欄位，**不會寫進 `state`**，所以不會同步到共用資料庫、也不會跟對方共享。它只會送到 `api.anthropic.com`。
 
+### 要花多少錢
+
+文字貼上**永遠免費**。只有讀照片會花錢，而且只有在走 API key 那條路時（artifact 那條走的是你自己的 Claude 額度）。
+
+讀一張班表大約 3,000 input / 5,000 output token：
+
+| 模型 | $/MTok | 一張約 | 適合 |
+|---|---|---|---|
+| Opus 5.5 | $4 / $20 | $0.11 | 照片糊、手寫的也讀得出來 |
+| Sonnet 5.5 | $2 / $10 | $0.06 | 清楚的班表夠用 |
+| Haiku 4.5 | $1 / $5 | $0.03 | 只適合很清楚的印刷表格 |
+
+兩個人每月各讀一次 = **一個月幾塊台幣**。設定頁可以切模型。
+
+App **不估算**花費 —— 它讀 API 回傳的 `usage`，用實際 token 數算，每次讀完直接顯示「這次花了 $0.03」，並累計在設定頁（只存本機）。
+
 直連用的是 `fetch`，不是官方 SDK —— 因為交付形式是「一個 HTML 檔、零相依、雙擊就能開」，不能有 build step 也不想綁 CDN。但 wire format 不是猜的：`anthropic-dangerous-direct-browser-access: true` 這個 header 和 base64 圖片區塊的形狀，都是從 `@anthropic-ai/sdk` 的原始碼和型別定義裡確認的。
 
 ## 看得懂的格式
@@ -79,7 +95,7 @@ API key 存在 `localStorage` 的獨立欄位，**不會寫進 `state`**，所�
 ## 怎麼跑
 
 ```bash
-npm test      # 56 個測試，涵蓋解析、詢問、合併、匯出、照片、API 客戶端
+npm test      # 66 個測試，涵蓋解析、詢問、合併、匯出、照片、API 客戶端
 npm run build # 產生 dist/index.html（單檔）與 dist/artifact.html
 npm run serve # http://localhost:5173 開發用
 ```

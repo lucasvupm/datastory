@@ -4,8 +4,8 @@ import { daysInMonth } from '../core/parse.js';
 import { buildPersonSchedule, buildQuestions, learnShift, forgetShift } from '../core/clarify.js';
 import { mergeSchedules, DEFAULT_SETTINGS } from '../core/merge.js';
 import { buildIcs, buildTextSummary, buildBackup, parseBackup } from '../core/export.js';
-import { createStore, saveFile, saveBlob, askClaude, hasClaudeHelp, claudeImageLimits, askClaudeWithImages, describeClaudeError, getApiKey, setApiKey, maskApiKey, LOCAL_KEY } from './storage.js';
-import { askClaudeDirect } from '../core/claude.js';
+import { createStore, saveFile, saveBlob, askClaude, hasClaudeHelp, claudeImageLimits, askClaudeWithImages, describeClaudeError, getApiKey, setApiKey, maskApiKey, getModel, setModel, getSpend, addSpend, resetSpend, LOCAL_KEY } from './storage.js';
+import { askClaudeDirect, MODELS, MODEL, modelOf, formatCost } from '../core/claude.js';
 import { esc, renderCalendar, renderStats, renderRuns, renderSlots, renderQuestions, renderDict, renderDayEditor } from './render.js';
 import { renderPng } from './png.js';
 import { prepareImages, releaseImages, buildPhotoPrompt, rowToText, normalizePhotoResult, formatBytes, blobToBase64 } from './photo.js';
@@ -359,9 +359,37 @@ function resultTab() {
   </div>`;
 }
 
+function spendLine() {
+  const spend = getSpend();
+  if (spend.calls === 0) return '<p class="hint" style="margin-top:12px">還沒用過。文字貼上永遠免費，只有讀照片才會花錢。</p>';
+  return `<p class="hint" style="margin-top:12px">這台裝置累計：<b>${formatCost(spend.total)}</b>（讀了 ${spend.calls} 次）　<button class="btn-link" data-act="resetSpend">歸零</button></p>`;
+}
+
 function settingsTab() {
   const s = state.settings;
   return `<div class="card">
+    <header><h2>讀照片</h2></header>
+    <p class="hint">貼上你自己的 Anthropic API key，任何瀏覽器、任何裝置都能直接讀班表照片。到 <code>console.anthropic.com</code> 開一把，<code>sk-ant-</code> 開頭。</p>
+    <div class="fields" style="margin-top:12px">
+      <label class="field" style="flex:1 1 240px"><span>API KEY</span><input type="password" id="api-key" value="${esc(getApiKey())}" placeholder="sk-ant-..." autocomplete="off" spellcheck="false"></label>
+      <button class="btn" data-act="saveKey">存起來</button>
+      ${getApiKey() ? '<button class="btn ghost" data-act="clearKey">清掉</button>' : ''}
+    </div>
+    ${getApiKey() ? `<p class="hint" style="margin-top:8px">目前：<code>${esc(maskApiKey(getApiKey()))}</code>　這把 key 只存在這台裝置，只會送到 api.anthropic.com，不會進共用資料庫、也不會跟對方同步。</p>` : ''}
+    <h3 style="margin-top:16px">用哪個模型讀</h3>
+    <p class="hint">價格是每百萬 token。一次讀一張班表大概 3,000 進 / 5,000 出。</p>
+    <div class="dict" style="margin-top:10px">
+      ${Object.entries(MODELS).map(([id, m]) => `<label class="dict-row" style="cursor:pointer">
+        <input type="radio" name="model" value="${id}" data-act="pickModel" ${modelOf(getModel() || MODEL) === id ? 'checked' : ''}>
+        <span class="key">${esc(m.label)}</span>
+        <span class="meta">$${m.input} 進 / $${m.output} 出　≈ ${formatCost((3000 * m.input + 5000 * m.output) / 1e6)} 一張</span>
+        <span class="spacer"></span>
+        <span class="hint">${esc(m.note)}</span>
+      </label>`).join('')}
+    </div>
+    ${spendLine()}
+  </div>
+  <div class="card">
     <header><h2>怎麼算「都有空」</h2></header>
     <p class="hint">共同空檔是從兩個人的清醒時間裡，扣掉上班、通勤、下大夜之後要補的眠，剩下的交集。</p>
     <div class="fields" style="margin-top:12px">
@@ -378,16 +406,6 @@ function settingsTab() {
     <div class="row" style="margin-top:12px">
       <button class="btn tiny" data-act="addDict">手動新增一個班別</button>
     </div>
-  </div>
-  <div class="card">
-    <header><h2>讀照片</h2></header>
-    <p class="hint">貼上你自己的 Anthropic API key，任何瀏覽器、任何裝置都能直接讀班表照片。到 <code>console.anthropic.com</code> 開一把，<code>sk-ant-</code> 開頭。</p>
-    <div class="fields" style="margin-top:12px">
-      <label class="field" style="flex:1 1 240px"><span>API KEY</span><input type="password" id="api-key" value="${esc(getApiKey())}" placeholder="sk-ant-..." autocomplete="off" spellcheck="false"></label>
-      <button class="btn" data-act="saveKey">存起來</button>
-      ${getApiKey() ? '<button class="btn ghost" data-act="clearKey">清掉</button>' : ''}
-    </div>
-    ${getApiKey() ? `<p class="hint" style="margin-top:8px">目前：<code>${esc(maskApiKey(getApiKey()))}</code>　這把 key 只存在這台裝置，只會送到 api.anthropic.com，不會進共用資料庫、也不會跟對方同步。</p>` : ''}
   </div>
   <div class="card">
     <header><h2>這個環境支援什麼</h2></header>
@@ -677,6 +695,15 @@ const ACTIONS = {
     render();
     toast(value.trim() ? '存好了，現在可以讀照片了' : '清掉了');
   },
+  pickModel(el) {
+    setModel(el.value);
+    render();
+    toast(`改用 ${MODELS[el.value]?.label || el.value}`);
+  },
+  resetSpend() {
+    resetSpend();
+    render();
+  },
   clearKey() {
     setApiKey('');
     render();
@@ -779,6 +806,7 @@ const ACTIONS = {
     try {
       const prompt = buildPhotoPrompt(state.period);
       let data = null;
+      let spent = 0;
 
       // 路線 1：在 claude.ai 的 artifact 裡，而且這個檢視器支援傳圖（免費、不用 key）
       if (imageLimits && !imagesBlocked) {
@@ -798,7 +826,16 @@ const ACTIONS = {
           return;
         }
         const encoded = await Promise.all(ps.images.map((img) => blobToBase64(img.blob)));
-        data = await askClaudeDirect({ apiKey: key, images: encoded, prompt, signal: controller.signal });
+        const res = await askClaudeDirect({
+          apiKey: key,
+          images: encoded,
+          prompt,
+          model: modelOf(getModel() || MODEL),
+          signal: controller.signal,
+        });
+        data = res.data;
+        spent = res.cost;
+        addSpend(res.cost);
       }
 
       const result = normalizePhotoResult(data, state.period);
@@ -806,7 +843,8 @@ const ACTIONS = {
         ps.error = '這張照片我讀不出班表。可以拍清楚一點，或改用文字貼上。';
         return;
       }
-      ps.info = result.note ? `Claude 的備註：${result.note}` : '';
+      const price = spent > 0 ? `這次花了 ${formatCost(spent)}。` : '';
+      ps.info = `${price}${result.note ? `Claude 的備註：${result.note}` : ''}`.trim();
       applyPhotoResult(id, result);
     } catch (err) {
       if (err?.code === 'cancelled') { /* 使用者按了停止 */ }

@@ -61,9 +61,11 @@ export async function build() {
   const css = await readFile(resolve(root, 'src/styles.css'), 'utf8');
   const shell = await readFile(resolve(root, 'src/shell.html'), 'utf8');
   const script = `<script>\n(function () {\n'use strict';\n${chunks.map((c) => c.code).join('\n')}\nif (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);\nelse start();\n})();\n</script>`;
+  // 用 replacer function，不要用字串 —— 替換字串裡的 $$ 會被當成跳脫字元，
+  // 會把程式碼裡的 `$${x}` 吃成 `${x}`（金額就少了錢字號）。
   const body = shell
-    .replace('<!--STYLE-->', `<style>\n${css.trim()}\n</style>`)
-    .replace('<!--SCRIPT-->', script);
+    .replace('<!--STYLE-->', () => `<style>\n${css.trim()}\n</style>`)
+    .replace('<!--SCRIPT-->', () => script);
 
   await mkdir(resolve(root, 'dist'), { recursive: true });
   // 給 Artifact 用的：只有 body 內容，發佈時會自動補上 <!doctype> 跟 head

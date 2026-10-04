@@ -23,6 +23,48 @@ export function setApiKey(value) {
   }
 }
 
+const MODEL_STORAGE = 'gongtong-banbiao-model';
+const SPEND_STORAGE = 'gongtong-banbiao-spend';
+
+export function getModel() {
+  try {
+    return localStorage.getItem(MODEL_STORAGE) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function setModel(id) {
+  try {
+    localStorage.setItem(MODEL_STORAGE, id);
+  } catch { /* 存不了就用預設 */ }
+}
+
+/** 累計花費，只存在這台裝置，單純給使用者看。 */
+export function getSpend() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SPEND_STORAGE) || '{}');
+    return { total: Number(raw.total) || 0, calls: Number(raw.calls) || 0 };
+  } catch {
+    return { total: 0, calls: 0 };
+  }
+}
+
+export function addSpend(usd) {
+  const prev = getSpend();
+  const next = { total: prev.total + (Number(usd) || 0), calls: prev.calls + 1 };
+  try {
+    localStorage.setItem(SPEND_STORAGE, JSON.stringify(next));
+  } catch { /* 無所謂 */ }
+  return next;
+}
+
+export function resetSpend() {
+  try {
+    localStorage.removeItem(SPEND_STORAGE);
+  } catch { /* 無所謂 */ }
+}
+
 export function maskApiKey(key) {
   if (!key) return '';
   return key.length <= 14 ? '••••' : `${key.slice(0, 11)}…${key.slice(-4)}`;
